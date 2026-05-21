@@ -8,6 +8,16 @@
 - `daily-video`: 平日 6:55 JST、10〜20分のAI動画を `#ai学習動画` に投稿
 - `weekly-video`: 土曜 6:55 JST、長尺1本＋短尺4本の週次動画まとめを `#ai学習動画` に投稿
 
+## 動画ソース
+
+動画は検索で広く拾わず、以下の指定ソースに絞ります。
+
+- Lex Fridman Podcast
+- All-In Podcast
+- TED / TEDx / TED-Ed
+- Stanford Graduate School of Business / View From The Top
+- World Economic Forum
+
 ## 必要な GitHub Secrets
 
 - `GEMINI_API_KEY`: Gemini APIキー
@@ -29,7 +39,7 @@ python3 ai_slack_curator/curator.py --mode weekly-video --dry-run
 
 ## 品質を保つ仕組み
 
-- 公式サイト、RSS、YouTube Data APIから候補を収集
+- 公式サイト、RSS、指定YouTubeチャンネル/プレイリストから候補を収集
 - URL単位で重複排除
 - `.ai-curator-state.json` に投稿済みURLを保存
 - Geminiには選定と日本語要約だけを任せる

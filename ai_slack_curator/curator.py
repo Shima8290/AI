@@ -62,24 +62,47 @@ GOOGLE_NEWS_RSS_QUERIES = [
 ]
 
 VIDEO_QUERIES_SHORT = [
-    "AI learning TED",
-    "AI education TED-Ed",
-    "AI TEDx Talks",
-    "artificial intelligence World Economic Forum",
-    "AI OpenAI",
-    "AI Google DeepMind",
-    "AI Anthropic",
-    "AI Stanford Graduate School of Business",
-    "AI Lex Clips",
-    "AI All-In Podcast clip",
+    "AI",
+    "artificial intelligence",
+    "AI education",
+    "AI future",
+    "AI jobs",
 ]
 
 VIDEO_QUERIES_LONG = [
-    "AI Lex Fridman Podcast",
-    "AI All-In Podcast",
-    "AI Stanford Graduate School of Business View From The Top",
-    "AI World Economic Forum full session",
+    "AI",
+    "artificial intelligence",
+    "OpenAI",
+    "Anthropic",
+    "Gemini",
 ]
+
+YOUTUBE_CHANNELS = {
+    "lex_fridman": "UCSHZKyawb77ixDdsGog4iWA",
+    "all_in": "UCESLZhusAkFfsNsApnjF_Cg",
+    "ted": "UCAuUUnT6oDeKwE6v1NGQxug",
+    "tedx": "UCsT0YIqwnpJCM-mx7-gSA4Q",
+    "ted_ed": "UCsooa4yRKGN_zEE8iknghZA",
+    "stanford_gsb": "UCGwuxdEeCf0TIA2RbPOj-8g",
+    "wef": "UCw-kH-Od73XDAt7qtH9uBYA",
+}
+
+STANFORD_VIEW_FROM_THE_TOP_PLAYLIST = "PLxq_lXOUlvQAwaY_9K4ZFH9Xdar9WzCaL"
+
+SHORT_SOURCE_CHANNEL_IDS = {
+    YOUTUBE_CHANNELS["ted"],
+    YOUTUBE_CHANNELS["tedx"],
+    YOUTUBE_CHANNELS["ted_ed"],
+    YOUTUBE_CHANNELS["stanford_gsb"],
+    YOUTUBE_CHANNELS["wef"],
+}
+
+LONG_SOURCE_CHANNEL_IDS = {
+    YOUTUBE_CHANNELS["lex_fridman"],
+    YOUTUBE_CHANNELS["all_in"],
+    YOUTUBE_CHANNELS["stanford_gsb"],
+    YOUTUBE_CHANNELS["wef"],
+}
 
 ALLOWED_SHORT_CHANNELS = [
     "TED",
@@ -120,6 +143,7 @@ class Candidate:
     snippet: str = ""
     duration_seconds: int | None = None
     channel: str = ""
+    channel_id: str = ""
 
     def normalized_url(self) -> str:
         parsed = urllib.parse.urlsplit(self.url)
@@ -346,7 +370,7 @@ def collect_news_candidates(days: int = 2) -> list[Candidate]:
     return dedupe(candidates)
 
 
-def youtube_search(query: str, *, days: int, max_results: int = 8) -> list[str]:
+def youtube_search(query: str, *, days: int, max_results: int = 8, channel_id: str | None = None) -> list[str]:
     key = os.getenv("YOUTUBE_API_KEY")
     if not key:
         return []
@@ -362,6 +386,8 @@ def youtube_search(query: str, *, days: int, max_results: int = 8) -> list[str]:
         "safeSearch": "strict",
         "relevanceLanguage": "en",
     }
+    if channel_id:
+        params["channelId"] = channel_id
     url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
     try:
         data = request_json(url)
@@ -371,6 +397,30 @@ def youtube_search(query: str, *, days: int, max_results: int = 8) -> list[str]:
     ids = []
     for item in data.get("items", []):
         video_id = item.get("id", {}).get("videoId")
+        if video_id:
+            ids.append(video_id)
+    return ids
+
+
+def youtube_playlist_video_ids(playlist_id: str, *, max_results: int = 25) -> list[str]:
+    key = os.getenv("YOUTUBE_API_KEY")
+    if not key:
+        return []
+    params = {
+        "part": "contentDetails",
+        "playlistId": playlist_id,
+        "maxResults": max_results,
+        "key": key,
+    }
+    url = "https://www.googleapis.com/youtube/v3/playlistItems?" + urllib.parse.urlencode(params)
+    try:
+        data = request_json(url)
+    except Exception as exc:
+        print(f"warning: YouTube playlist failed for {playlist_id!r}: {exc}", file=sys.stderr)
+        return []
+    ids = []
+    for item in data.get("items", []):
+        video_id = item.get("contentDetails", {}).get("videoId")
         if video_id:
             ids.append(video_id)
     return ids
@@ -407,6 +457,7 @@ def youtube_videos(video_ids: list[str]) -> list[Candidate]:
                     snippet=snippet.get("description", "")[:400],
                     duration_seconds=duration,
                     channel=snippet.get("channelTitle", ""),
+                    channel_id=snippet.get("channelId", ""),
                 )
             )
     return candidates
@@ -422,13 +473,18 @@ def parse_iso_duration(value: str) -> int | None:
 
 def collect_video_candidates(*, weekly: bool, days: int | None = None) -> list[Candidate]:
     queries = VIDEO_QUERIES_LONG if weekly else VIDEO_QUERIES_SHORT
+    channel_ids = LONG_SOURCE_CHANNEL_IDS if weekly else SHORT_SOURCE_CHANNEL_IDS
     if weekly:
         queries = VIDEO_QUERIES_LONG + VIDEO_QUERIES_SHORT
+        channel_ids = LONG_SOURCE_CHANNEL_IDS | SHORT_SOURCE_CHANNEL_IDS
     days = days or (7 if weekly else 45)
     ids: list[str] = []
-    for query in queries:
-        ids.extend(youtube_search(query, days=days, max_results=8))
-        time.sleep(0.15)
+    for channel_id in channel_ids:
+        for query in queries:
+            ids.extend(youtube_search(query, days=days, max_results=6, channel_id=channel_id))
+            time.sleep(0.1)
+    if weekly:
+        ids.extend(youtube_playlist_video_ids(STANFORD_VIEW_FROM_THE_TOP_PLAYLIST, max_results=25))
     candidates = youtube_videos(list(dict.fromkeys(ids)))
     candidates = [c for c in candidates if is_allowed_video_candidate(c, weekly=weekly)]
     if weekly:
@@ -437,9 +493,8 @@ def collect_video_candidates(*, weekly: bool, days: int | None = None) -> list[C
 
 
 def is_allowed_video_candidate(candidate: Candidate, *, weekly: bool) -> bool:
-    channel = (candidate.channel or candidate.source or "").casefold()
-    allowlist = ALLOWED_SHORT_CHANNELS + (ALLOWED_LONG_CHANNELS if weekly else [])
-    if not any(allowed.casefold() in channel for allowed in allowlist):
+    allowed_ids = (SHORT_SOURCE_CHANNEL_IDS | LONG_SOURCE_CHANNEL_IDS) if weekly else SHORT_SOURCE_CHANNEL_IDS
+    if candidate.channel_id not in allowed_ids:
         return False
     if is_disallowed_language(candidate.title) or is_disallowed_language(candidate.snippet):
         return False
@@ -798,6 +853,10 @@ def fallback_weekly_video(candidates: list[Candidate]) -> dict[str, Any]:
 
 
 def channel_matches(candidate: Candidate, names: list[str]) -> bool:
+    if names == ALLOWED_LONG_CHANNELS:
+        return candidate.channel_id in LONG_SOURCE_CHANNEL_IDS
+    if names == ALLOWED_SHORT_CHANNELS:
+        return candidate.channel_id in SHORT_SOURCE_CHANNEL_IDS
     channel = (candidate.channel or candidate.source or "").casefold()
     return any(name.casefold() in channel for name in names)
 

@@ -1,0 +1,98 @@
+name: AI Slack Curator
+
+on:
+  schedule:
+    # 06:55 JST is 21:55 UTC on the previous day.
+    - cron: "55 21 * * *"
+    - cron: "55 21 * * 0-4"
+    - cron: "55 21 * * 5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        default: "news"
+        type: choice
+        options:
+          - news
+          - daily-video
+          - weekly-video
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-slack-curator-state
+  cancel-in-progress: false
+
+jobs:
+  news:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'news' || github.event.schedule == '55 21 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post AI news
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          SLACK_WEBHOOK_NEWS: ${{ secrets.SLACK_WEBHOOK_NEWS }}
+        run: python3 ai_slack_curator/curator.py --mode news
+      - name: Persist seen URLs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ai-curator-state.json
+          git diff --cached --quiet || git commit -m "Update AI curator state"
+          git pull --rebase
+          git push
+
+  daily-video:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'daily-video' || github.event.schedule == '55 21 * * 0-4'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post daily AI video
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACK_WEBHOOK_VIDEO }}
+        run: python3 ai_slack_curator/curator.py --mode daily-video
+      - name: Persist seen URLs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ai-curator-state.json
+          git diff --cached --quiet || git commit -m "Update AI curator state"
+          git pull --rebase
+          git push
+
+  weekly-video:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'weekly-video' || github.event.schedule == '55 21 * * 5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post weekly AI video catch-up
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACK_WEBHOOK_VIDEO }}
+        run: python3 ai_slack_curator/curator.py --mode weekly-video
+      - name: Persist seen URLs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ai-curator-state.json
+          git diff --cached --quiet || git commit -m "Update AI curator state"
+          git pull --rebase
+          git push

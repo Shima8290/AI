@@ -49,23 +49,57 @@ RSS_FEEDS = [
     "https://ledge.ai/feed/",
 ]
 
+GOOGLE_NEWS_RSS_QUERIES = [
+    "AI when:2d site:itmedia.co.jp/aiplus",
+    "生成AI when:2d site:itmedia.co.jp/aiplus",
+    "AI when:2d site:publickey1.jp",
+    "生成AI when:2d site:ledge.ai",
+    "AI when:2d site:xtech.nikkei.com",
+    "生成AI when:2d site:nikkei.com",
+    "OpenAI when:2d",
+    "Anthropic Claude when:2d",
+    "Google DeepMind Gemini when:2d",
+]
+
 VIDEO_QUERIES_SHORT = [
-    "TED AI talk 10 minutes",
-    "TEDx AI 15 minutes",
-    "World Economic Forum AI panel 15 minutes",
-    "OpenAI official AI explanation",
-    "Google DeepMind AI explanation",
-    "Anthropic official AI video",
-    "Lex Fridman AI highlight",
-    "All-In Podcast AI highlights",
-    "Stanford GSB AI clip",
+    "AI learning TED",
+    "AI education TED-Ed",
+    "AI TEDx Talks",
+    "artificial intelligence World Economic Forum",
+    "AI OpenAI",
+    "AI Google DeepMind",
+    "AI Anthropic",
+    "AI Stanford Graduate School of Business",
+    "AI Lex Clips",
+    "AI All-In Podcast clip",
 ]
 
 VIDEO_QUERIES_LONG = [
-    "Lex Fridman AI podcast latest",
-    "All-In Podcast AI latest",
-    "Stanford GSB AI lecture latest",
-    "World Economic Forum AI full session latest",
+    "AI Lex Fridman Podcast",
+    "AI All-In Podcast",
+    "AI Stanford Graduate School of Business View From The Top",
+    "AI World Economic Forum full session",
+]
+
+ALLOWED_SHORT_CHANNELS = [
+    "TED",
+    "TED-Ed",
+    "TEDx Talks",
+    "World Economic Forum",
+    "OpenAI",
+    "Google DeepMind",
+    "Anthropic",
+    "Stanford Graduate School of Business",
+    "Lex Clips",
+    "Lex Fridman",
+    "All-In Podcast",
+]
+
+ALLOWED_LONG_CHANNELS = [
+    "Lex Fridman",
+    "All-In Podcast",
+    "Stanford Graduate School of Business",
+    "World Economic Forum",
 ]
 
 WEEKDAY_THEMES = {
@@ -266,6 +300,16 @@ def rss_candidates(feed_url: str) -> list[Candidate]:
     return candidates
 
 
+def google_news_rss_url(query: str) -> str:
+    params = {
+        "q": query,
+        "hl": "ja",
+        "gl": "JP",
+        "ceid": "JP:ja",
+    }
+    return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
+
+
 def find_text(node: ET.Element, names: list[str], ns: dict[str, str]) -> str:
     for name in names:
         found = node.find(name, ns) if ":" in name else node.find(name)
@@ -296,6 +340,9 @@ def collect_news_candidates(days: int = 2) -> list[Candidate]:
     candidates: list[Candidate] = []
     for feed in RSS_FEEDS:
         candidates.extend(rss_candidates(feed))
+    for query in GOOGLE_NEWS_RSS_QUERIES:
+        candidates.extend(rss_candidates(google_news_rss_url(query)))
+        time.sleep(0.1)
     return dedupe(candidates)
 
 
@@ -313,6 +360,7 @@ def youtube_search(query: str, *, days: int, max_results: int = 8) -> list[str]:
         "maxResults": max_results,
         "key": key,
         "safeSearch": "strict",
+        "relevanceLanguage": "en",
     }
     url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
     try:
@@ -372,18 +420,51 @@ def parse_iso_duration(value: str) -> int | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def collect_video_candidates(*, weekly: bool) -> list[Candidate]:
+def collect_video_candidates(*, weekly: bool, days: int | None = None) -> list[Candidate]:
     queries = VIDEO_QUERIES_LONG if weekly else VIDEO_QUERIES_SHORT
     if weekly:
         queries = VIDEO_QUERIES_LONG + VIDEO_QUERIES_SHORT
+    days = days or (7 if weekly else 45)
     ids: list[str] = []
     for query in queries:
-        ids.extend(youtube_search(query, days=7 if weekly else 45, max_results=8))
+        ids.extend(youtube_search(query, days=days, max_results=8))
         time.sleep(0.15)
     candidates = youtube_videos(list(dict.fromkeys(ids)))
+    candidates = [c for c in candidates if is_allowed_video_candidate(c, weekly=weekly)]
     if weekly:
         return dedupe(candidates)
     return dedupe([c for c in candidates if c.duration_seconds and 600 <= c.duration_seconds <= 1200])
+
+
+def is_allowed_video_candidate(candidate: Candidate, *, weekly: bool) -> bool:
+    channel = (candidate.channel or candidate.source or "").casefold()
+    allowlist = ALLOWED_SHORT_CHANNELS + (ALLOWED_LONG_CHANNELS if weekly else [])
+    if not any(allowed.casefold() in channel for allowed in allowlist):
+        return False
+    if is_disallowed_language(candidate.title) or is_disallowed_language(candidate.snippet):
+        return False
+    title = f"{candidate.title} {candidate.snippet}".casefold()
+    ai_terms = ["ai", "artificial intelligence", "生成ai", "人工知能", "gemini", "openai", "anthropic", "claude", "deepmind", "llm"]
+    return any(term in title for term in ai_terms)
+
+
+def is_disallowed_language(text: str) -> bool:
+    if not text:
+        return False
+    sample = text[:160]
+    disallowed = sum(1 for char in sample if is_disallowed_script(char))
+    letters = sum(1 for char in sample if char.isalpha())
+    return letters > 0 and disallowed / max(letters, 1) > 0.15
+
+
+def is_disallowed_script(char: str) -> bool:
+    code = ord(char)
+    return (
+        0x0400 <= code <= 0x04FF  # Cyrillic
+        or 0x0E00 <= code <= 0x0E7F  # Thai
+        or 0xAC00 <= code <= 0xD7AF  # Hangul
+        or 0x0600 <= code <= 0x06FF  # Arabic
+    )
 
 
 def gemini_generate(prompt: str) -> str:
@@ -436,9 +517,11 @@ def candidates_for_prompt(candidates: list[Candidate], limit: int = 30) -> str:
 def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tuple[str, list[str]]:
     blocked = seen_urls(state, "news", 14)
     candidates = [c for c in candidates if c.normalized_url() not in blocked]
+    candidates = diversify_candidates(candidates, per_domain=4)
     if len(candidates) < 5:
         candidates = collect_news_candidates(days=4)
         candidates = [c for c in candidates if c.normalized_url() not in blocked]
+        candidates = diversify_candidates(candidates, per_domain=4)
     today = dt.datetime.now(JST)
     prompt = f"""
 あなたは「学生AIスクール」コミュニティ向けのAIニュースキュレーターです。
@@ -447,7 +530,8 @@ def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tu
 今日: {today.strftime('%Y/%-m/%-d')}({jp_weekday(today)})
 条件:
 - 当日・前日・過去48時間のAI関連ニュースを優先
-- 日本の動向を1〜2本入れる
+- 日本語/日本国内ソース候補がある場合は1〜2本入れる
+- 同じ企業・同じドメインに偏らせない。OpenAI/Google/Anthropic公式だけで5本にしない
 - 重複や根拠の薄い記事は避ける
 - 本文は各80〜150字、2〜4文
 - 全て日本語
@@ -499,6 +583,24 @@ def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tu
     return message, used_urls
 
 
+def diversify_candidates(candidates: list[Candidate], *, per_domain: int) -> list[Candidate]:
+    buckets: dict[str, list[Candidate]] = {}
+    for candidate in candidates:
+        domain = urllib.parse.urlsplit(candidate.url).netloc.replace("www.", "")
+        buckets.setdefault(domain, [])
+        if len(buckets[domain]) < per_domain:
+            buckets[domain].append(candidate)
+    output: list[Candidate] = []
+    while buckets:
+        for domain in list(buckets.keys()):
+            bucket = buckets[domain]
+            if bucket:
+                output.append(bucket.pop(0))
+            if not bucket:
+                del buckets[domain]
+    return output
+
+
 def fallback_news_items(candidates: list[Candidate]) -> list[dict[str, str]]:
     items = []
     for c in candidates:
@@ -530,6 +632,8 @@ def build_daily_video_message(candidates: list[Candidate], state: dict[str, Any]
 テーマ: {theme}
 条件:
 - 通学中に見られる軽い1本
+- 監視対象チャンネル以外は選ばない
+- 候補のtitle/descriptionに書かれていない内容を足さない
 - 学生の学業・就活・キャリアへの示唆を書く
 - 英語タイトルは日本語訳を併記
 - 3〜5文
@@ -555,6 +659,12 @@ def build_daily_video_message(candidates: list[Candidate], state: dict[str, Any]
             "url": c.url,
         }
 
+    selected = find_candidate_by_url(candidates, item.get("url", ""))
+    if selected is None or not selected.duration_seconds or not 600 <= selected.duration_seconds <= 1200:
+        selected = candidates[0]
+        item = video_item(selected, "今日のAI動画")
+        item["duration"] = format_duration(selected.duration_seconds)
+
     message = "\n".join(
         [
             f"🎬 **今日のAI動画** — {today.strftime('%Y/%-m/%-d')}({jp_weekday(today)})・テーマ：{theme}",
@@ -578,9 +688,25 @@ def build_weekly_video_message(candidates: list[Candidate], state: dict[str, Any
     today = dt.datetime.now(JST)
     start = today.date() - dt.timedelta(days=7)
     end = today.date() - dt.timedelta(days=1)
-    if len(candidates) < 5:
+    long_candidates = [
+        c
+        for c in candidates
+        if c.duration_seconds
+        and c.duration_seconds >= 3600
+        and channel_matches(c, ALLOWED_LONG_CHANNELS)
+    ]
+    short_candidates = [
+        c
+        for c in candidates
+        if c.duration_seconds
+        and 600 <= c.duration_seconds <= 1200
+        and channel_matches(c, ALLOWED_SHORT_CHANNELS)
+    ]
+    if not long_candidates or len(short_candidates) < 4:
         return "🎬 **今週のAI動画キャッチアップ**\n\n先週は新着が少なかったので、今週の配信はお休みします。", []
 
+    prompt_candidates = dedupe(long_candidates[:12] + short_candidates[:30])
+    supplementing = any(not within_date_range(c.published, start, end) for c in prompt_candidates)
     prompt = f"""
 あなたは「学生AIスクール」コミュニティ向けの動画キュレーターです。
 候補から長尺1本と短尺4本を選び、JSONだけ返してください。
@@ -589,6 +715,8 @@ def build_weekly_video_message(candidates: list[Candidate], state: dict[str, Any
 条件:
 - 長尺1本: 1時間以上。学生に刺さるAI × キャリア/経済/倫理を優先
 - 短尺4本: 10〜20分程度。技術系1、ビジネス系1、社会倫理系1、実用Tips系1
+- 監視対象チャンネル以外は選ばない
+- 候補のtitle/descriptionに書かれていない内容を足さない
 - 英語タイトルは日本語訳を併記
 - 架空の内容を足さない
 
@@ -597,25 +725,48 @@ def build_weekly_video_message(candidates: list[Candidate], state: dict[str, Any
 "shorts":[{{"label":"短尺・技術系","channel":"...","duration":"◯分","date":"YYYY/M/D","title":"...","body":"3〜4文","url":"..."}}]}}
 
 候補:
-{candidates_for_prompt(candidates, 45)}
+{candidates_for_prompt(prompt_candidates, 45)}
 """
     try:
         data = extract_json(gemini_generate(prompt))
     except Exception as exc:
         print(f"warning: Gemini weekly video failed: {exc}", file=sys.stderr)
-        data = fallback_weekly_video(candidates)
+        data = fallback_weekly_video(long_candidates + short_candidates)
 
     long = data.get("long", {})
-    shorts = data.get("shorts", [])[:4]
+    if find_candidate_by_url(long_candidates, long.get("url", "")) is None:
+        long = video_item(long_candidates[0], "長尺")
+    raw_shorts = data.get("shorts", [])[:4]
+    shorts = []
+    used_short_urls = set()
+    for item in raw_shorts:
+        selected = find_candidate_by_url(short_candidates, item.get("url", ""))
+        if selected is None or normalize_url(selected.url) in used_short_urls:
+            continue
+        used_short_urls.add(normalize_url(selected.url))
+        shorts.append(item)
+    for candidate in short_candidates:
+        if len(shorts) >= 4:
+            break
+        if normalize_url(candidate.url) in used_short_urls:
+            continue
+        shorts.append(video_item(candidate, ["短尺・技術系", "短尺・ビジネス系", "短尺・社会倫理系", "短尺・実用Tips系"][len(shorts)]))
+        used_short_urls.add(normalize_url(candidate.url))
+    if len(shorts) < 4:
+        return "🎬 **今週のAI動画キャッチアップ**\n\n先週は新着が少なかったので、今週の配信はお休みします。", []
     lines = [
         f"🎬 **今週のAI動画キャッチアップ** — {today.strftime('%Y/%-m')} W{week_of_month(today.date())}（{start.strftime('%-m/%-d')}〜{end.strftime('%-m/%-d')}）",
         "",
+    ]
+    if supplementing:
+        lines.extend(["先週は新着が少なかったので、評価の高い過去動画から補完しています。", ""])
+    lines.extend([
         f"**{sanitize_inline(long.get('channel', 'YouTube'))}** _(再生時間: {sanitize_inline(long.get('duration', ''))})_ — {sanitize_inline(long.get('date', today.strftime('%Y/%-m/%-d')))}公開",
         f"「{sanitize_inline(long.get('title', ''))}」",
         sanitize_body(long.get("body", "")),
         long.get("url", "").strip(),
         "",
-    ]
+    ])
     used_urls = [normalize_url(long.get("url", ""))]
     for idx, item in enumerate(shorts, 2):
         label = sanitize_inline(item.get("label", f"{idx}本目"))
@@ -644,6 +795,50 @@ def fallback_weekly_video(candidates: list[Candidate]) -> dict[str, Any]:
         "long": video_item(long, "長尺"),
         "shorts": [video_item(c, label) for c, label in zip(shorts, ["短尺・技術系", "短尺・ビジネス系", "短尺・社会倫理系", "短尺・実用Tips系"])],
     }
+
+
+def channel_matches(candidate: Candidate, names: list[str]) -> bool:
+    channel = (candidate.channel or candidate.source or "").casefold()
+    return any(name.casefold() in channel for name in names)
+
+
+def find_candidate_by_url(candidates: list[Candidate], url: str) -> Candidate | None:
+    normalized = normalize_url(url)
+    if not normalized:
+        return None
+    for candidate in candidates:
+        if candidate.normalized_url() == normalized:
+            return candidate
+    return None
+
+
+def within_date_range(value: str, start: dt.date, end: dt.date) -> bool:
+    parsed = parse_date(value)
+    if not parsed:
+        return False
+    try:
+        day = dt.date.fromisoformat(parsed)
+    except ValueError:
+        return False
+    return start <= day <= end
+
+
+def has_weekly_minimum(candidates: list[Candidate]) -> bool:
+    long_candidates = [
+        c
+        for c in candidates
+        if c.duration_seconds
+        and c.duration_seconds >= 3600
+        and channel_matches(c, ALLOWED_LONG_CHANNELS)
+    ]
+    short_candidates = [
+        c
+        for c in candidates
+        if c.duration_seconds
+        and 600 <= c.duration_seconds <= 1200
+        and channel_matches(c, ALLOWED_SHORT_CHANNELS)
+    ]
+    return bool(long_candidates) and len(short_candidates) >= 4
 
 
 def video_item(candidate: Candidate, label: str) -> dict[str, str]:
@@ -747,7 +942,9 @@ def run(mode: str, *, dry_run: bool) -> None:
         if not dry_run:
             mark_seen(state, "video", urls)
     elif mode == "weekly-video":
-        candidates = collect_video_candidates(weekly=True)
+        candidates = collect_video_candidates(weekly=True, days=7)
+        if not has_weekly_minimum(candidates):
+            candidates = collect_video_candidates(weekly=True, days=45)
         message, urls = build_weekly_video_message(candidates, state)
         post_slack(message, VIDEO_WEBHOOK_ENV, dry_run=dry_run)
         if not dry_run:

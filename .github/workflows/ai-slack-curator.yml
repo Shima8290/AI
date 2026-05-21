@@ -36,9 +36,9 @@ jobs:
           python-version: "3.12"
       - name: Post AI news
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          SLACK_WEBHOOK_NEWS: ${{ secrets.SLACK_WEBHOOK_NEWS }}
+          SLACK_WEBHOOK_NEWS: ${{ secrets.SLACK }}
         run: python3 ai_slack_curator/curator.py --mode news
       - name: Persist seen URLs
         run: |
@@ -59,10 +59,10 @@ jobs:
           python-version: "3.12"
       - name: Post daily AI video
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACK_WEBHOOK_VIDEO }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE }}
+          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACKA }}
         run: python3 ai_slack_curator/curator.py --mode daily-video
       - name: Persist seen URLs
         run: |
@@ -83,10 +83,10 @@ jobs:
           python-version: "3.12"
       - name: Post weekly AI video catch-up
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACK_WEBHOOK_VIDEO }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE }}
+          SLACK_WEBHOOK_VIDEO: ${{ secrets.SLACKA }}
         run: python3 ai_slack_curator/curator.py --mode weekly-video
       - name: Persist seen URLs
         run: |

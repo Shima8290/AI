@@ -133,6 +133,36 @@ WEEKDAY_THEMES = {
     4: "AI × クリエイティブ・ユース（音楽、映像、デザイン）",
 }
 
+ENGLISH_SENTENCE_WORDS = {
+    "about",
+    "after",
+    "announced",
+    "announces",
+    "are",
+    "building",
+    "can",
+    "developers",
+    "for",
+    "from",
+    "how",
+    "into",
+    "launches",
+    "launched",
+    "make",
+    "new",
+    "releases",
+    "released",
+    "that",
+    "the",
+    "this",
+    "tools",
+    "what",
+    "when",
+    "why",
+    "will",
+    "with",
+}
+
 
 @dataclass
 class Candidate:
@@ -344,6 +374,27 @@ def find_text(node: ET.Element, names: list[str], ns: dict[str, str]) -> str:
 
 def strip_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", text or "")
+
+
+def has_japanese(text: str) -> bool:
+    return re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text or "") is not None
+
+
+def latin_word_count(text: str) -> int:
+    text = re.sub(r"https?://\S+", " ", text or "")
+    return len(re.findall(r"[A-Za-z]{3,}", text))
+
+
+def looks_untranslated_english(text: str) -> bool:
+    words = re.findall(r"[A-Za-z]{3,}", re.sub(r"https?://\S+", " ", text or ""))
+    if not has_japanese(text):
+        return len(words) >= 3
+    sentence_words = sum(1 for word in words if word.casefold() in ENGLISH_SENTENCE_WORDS)
+    return len(words) >= 4 and sentence_words >= 2
+
+
+def news_item_needs_japanese(item: dict[str, Any]) -> bool:
+    return looks_untranslated_english(str(item.get("title", ""))) or looks_untranslated_english(str(item.get("body", "")))
 
 
 def dedupe(candidates: list[Candidate]) -> list[Candidate]:
@@ -589,7 +640,8 @@ def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tu
 - 同じ企業・同じドメインに偏らせない。OpenAI/Google/Anthropic公式だけで5本にしない
 - 重複や根拠の薄い記事は避ける
 - 本文は各80〜150字、2〜4文
-- 全て日本語
+- タイトルと本文は必ず自然な日本語に翻訳する。英語タイトルをそのまま使わない
+- 企業名・サービス名・モデル名（OpenAI、Claude、Geminiなど）は固有名詞として英語表記のままでよい
 - 架空の内容を足さない。不確かな場合は候補から外す
 
 返却JSON:
@@ -603,7 +655,8 @@ def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tu
         items = data.get("items", [])[:5]
     except Exception as exc:
         print(f"warning: Gemini news generation failed: {exc}", file=sys.stderr)
-        items = fallback_news_items(candidates[:5])
+        items = candidate_news_items(candidates[:5])
+    items = ensure_japanese_news_items(items, candidates, today)
 
     if len(items) < 2:
         message = (
@@ -638,6 +691,62 @@ def build_news_message(candidates: list[Candidate], state: dict[str, Any]) -> tu
     return message, used_urls
 
 
+def ensure_japanese_news_items(
+    items: list[dict[str, Any]], candidates: list[Candidate], today: dt.datetime
+) -> list[dict[str, str]]:
+    items = [normalize_news_item(item, today) for item in items]
+    if any(news_item_needs_japanese(item) for item in items):
+        try:
+            items = repair_news_items_japanese(items, today)
+        except Exception as exc:
+            print(f"warning: Gemini news translation repair failed: {exc}", file=sys.stderr)
+
+    safe_items = [item for item in items if not news_item_needs_japanese(item)]
+    if len(safe_items) >= 2:
+        return safe_items[:5]
+
+    used_urls = {normalize_url(item["url"]) for item in safe_items if item.get("url")}
+    for item in fallback_news_items(candidates):
+        if item["url"] and normalize_url(item["url"]) not in used_urls and not news_item_needs_japanese(item):
+            safe_items.append(item)
+            used_urls.add(normalize_url(item["url"]))
+        if len(safe_items) >= 5:
+            break
+    return safe_items[:5]
+
+
+def normalize_news_item(item: dict[str, Any], today: dt.datetime) -> dict[str, str]:
+    return {
+        "title": sanitize_inline(item.get("title", "")),
+        "date": sanitize_inline(item.get("date") or today.strftime("%Y/%-m/%-d")),
+        "body": sanitize_body(item.get("body", "")),
+        "source": sanitize_inline(item.get("source", "出典")),
+        "url": str(item.get("url", "")).strip(),
+    }
+
+
+def repair_news_items_japanese(items: list[dict[str, str]], today: dt.datetime) -> list[dict[str, str]]:
+    prompt = f"""
+以下のAIニュース投稿JSONを、Slack投稿向けに整えてください。
+条件:
+- title と body は必ず自然な日本語にする。英語だけのタイトル・本文を残さない
+- OpenAI、Claude、Gemini、GPTなどの固有名詞は英語表記のままでよい
+- date、source、url は原則そのまま保持する
+- body は80〜150字、2〜4文
+- 架空の内容を足さない。不確かな場合は一般化して短く書く
+
+今日: {today.strftime('%Y/%-m/%-d')}({jp_weekday(today)})
+
+返却JSON:
+{{"items":[{{"title":"...","date":"YYYY/M/D","body":"...","source":"...","url":"..."}}]}}
+
+入力:
+{json.dumps({"items": items}, ensure_ascii=False, indent=2)}
+"""
+    data = extract_json(gemini_generate(prompt))
+    return [normalize_news_item(item, today) for item in data.get("items", [])[:5]]
+
+
 def diversify_candidates(candidates: list[Candidate], *, per_domain: int) -> list[Candidate]:
     buckets: dict[str, list[Candidate]] = {}
     for candidate in candidates:
@@ -659,16 +768,39 @@ def diversify_candidates(candidates: list[Candidate], *, per_domain: int) -> lis
 def fallback_news_items(candidates: list[Candidate]) -> list[dict[str, str]]:
     items = []
     for c in candidates:
+        source = c.source or urllib.parse.urlsplit(c.url).netloc
+        title = c.title[:80] if has_japanese(c.title) else f"海外AIニュース：{source}の最新動向"
+        if has_japanese(c.snippet):
+            body = c.snippet[:150]
+        else:
+            body = (
+                "海外ソースでAI関連の新しい動向が報じられています。"
+                "詳しい内容はリンク先で確認してください。"
+                "学生は学業・就活・キャリアへの影響を押さえておきたいテーマです。"
+            )
         items.append(
             {
-                "title": c.title[:80],
+                "title": title,
                 "date": slash_date(c.published),
-                "body": (c.snippet or "AI関連の最新動向です。学生は学業・就活・キャリアへの影響を確認しておきたい内容です。")[:150],
-                "source": c.source or urllib.parse.urlsplit(c.url).netloc,
+                "body": body,
+                "source": source,
                 "url": c.url,
             }
         )
     return items
+
+
+def candidate_news_items(candidates: list[Candidate]) -> list[dict[str, str]]:
+    return [
+        {
+            "title": c.title[:120],
+            "date": slash_date(c.published),
+            "body": c.snippet[:220] or "AI関連の最新動向です。",
+            "source": c.source or urllib.parse.urlsplit(c.url).netloc,
+            "url": c.url,
+        }
+        for c in candidates
+    ]
 
 
 def build_daily_video_message(candidates: list[Candidate], state: dict[str, Any]) -> tuple[str, list[str]]:

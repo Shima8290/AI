@@ -1,13 +1,7 @@
 name: AI Slack Curator
 
+# Disabled: Slack posting now runs from Codex automations.
 on:
-  schedule:
-    # Start news at 06:10 JST so long runs finish around 07:00 JST.
-    # 06:10 JST is 21:10 UTC on the previous day.
-    - cron: "10 21 * * *"
-    # Videos still start at 06:55 JST.
-    - cron: "55 21 * * 0-4"
-    - cron: "55 21 * * 5"
   workflow_dispatch:
     inputs:
       mode:
@@ -29,7 +23,7 @@ concurrency:
 
 jobs:
   news:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'news' || github.event.schedule == '10 21 * * *'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +46,7 @@ jobs:
           git push
 
   daily-video:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'daily-video' || github.event.schedule == '55 21 * * 0-4'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +70,7 @@ jobs:
           git push
 
   weekly-video:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'weekly-video' || github.event.schedule == '55 21 * * 5'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
